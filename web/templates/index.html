@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Discord on Go</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <h1 class="logo">Mini Discord</h1>
+        <div class="channels">
+            <h2>Text channels</h2>
+            <ul id="channel-list">
+                <li class="channel channel--active" data-channel="general">#general</li>
+                <li class="channel" data-channel="dev">#dev</li>
+                <li class="channel" data-channel="offtopic">#offtopic</li>
+            </ul>
+        </div>
+        <div class="voice">
+            <h2>Voice</h2>
+            <button id="voice-join-btn" type="button">Join voice</button>
+            <button id="voice-leave-btn" type="button" disabled>Leave voice</button>
+            <p id="voice-status">Voice: disconnected</p>
+        </div>
+    </aside>
+
+    <main class="chat">
+        <header class="chat-header">
+            <div>
+                <h2 id="current-channel-title">#general</h2>
+                <span class="chat-subtitle">Mini Discord clone on Go</span>
+            </div>
+            <div class="chat-user">
+                <span id="username-display">Guest</span>
+            </div>
+        </header>
+
+        <section class="chat-messages" id="messages"></section>
+
+        <footer class="chat-input">
+            <input type="text" id="message-input" placeholder="Write message..." autocomplete="off">
+            <button id="send-btn" type="button">Send</button>
+        </footer>
+    </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
