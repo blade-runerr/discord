@@ -106,9 +106,16 @@ inputEl.addEventListener("keydown", (e) => {
     }
 });
 
-// Very lightweight voice transport: sends MediaRecorder chunks over binary WS.
+// WebRTC voice: media is peer-to-peer, websocket is signaling only.
 let voiceSocket = null;
-let mediaRecorder = null;
+let selfPeerId = "";
+let localStream = null;
+const peerConnections = new Map();
+const remoteAudioEls = new Map();
+
+const rtcConfig = {
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+};
 
 async function joinVoice() {
     if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
@@ -116,28 +123,60 @@ async function joinVoice() {
     }
 
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+            video: false,
+        });
         voiceSocket = new WebSocket(`${protocol}://${location.host}/ws/voice`);
-        voiceSocket.binaryType = "arraybuffer";
 
         voiceSocket.addEventListener("open", () => {
             voiceStatusEl.textContent = "Voice: connected";
             voiceJoinBtn.disabled = true;
             voiceLeaveBtn.disabled = false;
+        });
 
-            mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-            mediaRecorder.ondataavailable = (event) => {
-                if (event.data && event.data.size > 0 && voiceSocket.readyState === WebSocket.OPEN) {
-                    event.data.arrayBuffer().then((buf) => voiceSocket.send(buf));
+        voiceSocket.addEventListener("message", async (event) => {
+            let msg;
+            try {
+                msg = JSON.parse(event.data);
+            } catch (err) {
+                console.error("invalid signaling message", err);
+                return;
+            }
+
+            if (msg.type === "welcome") {
+                selfPeerId = msg.id || "";
+                const peers = Array.isArray(msg.peers) ? msg.peers : [];
+                for (const peerId of peers) {
+                    await makeOffer(peerId);
                 }
-            };
-            mediaRecorder.start(300);
+                return;
+            }
+
+            if (msg.type === "peer_left") {
+                closePeer(msg.id);
+                return;
+            }
+
+            if (!msg.from || msg.from === selfPeerId) {
+                return;
+            }
+
+            if (msg.type === "offer") {
+                await handleOffer(msg.from, msg.sdp);
+            } else if (msg.type === "answer") {
+                await handleAnswer(msg.from, msg.sdp);
+            } else if (msg.type === "candidate") {
+                await handleCandidate(msg.from, msg.candidate);
+            }
         });
 
         voiceSocket.addEventListener("close", () => {
-            voiceStatusEl.textContent = "Voice: disconnected";
-            voiceJoinBtn.disabled = false;
-            voiceLeaveBtn.disabled = true;
+            cleanupVoiceState();
         });
     } catch (err) {
         console.error("voice error", err);
@@ -146,18 +185,145 @@ async function joinVoice() {
 }
 
 function leaveVoice() {
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-    }
-    mediaRecorder = null;
-
     if (voiceSocket) {
         voiceSocket.close();
     }
+    cleanupVoiceState();
+}
+
+function cleanupVoiceState() {
+    for (const peerId of peerConnections.keys()) {
+        closePeer(peerId);
+    }
+
+    if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+    }
+
+    localStream = null;
+    selfPeerId = "";
     voiceSocket = null;
     voiceStatusEl.textContent = "Voice: disconnected";
     voiceJoinBtn.disabled = false;
     voiceLeaveBtn.disabled = true;
+}
+
+function createPeerConnection(peerId) {
+    let pc = peerConnections.get(peerId);
+    if (pc) {
+        return pc;
+    }
+
+    pc = new RTCPeerConnection(rtcConfig);
+    peerConnections.set(peerId, pc);
+
+    if (localStream) {
+        localStream.getTracks().forEach((track) => {
+            pc.addTrack(track, localStream);
+        });
+    }
+
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            sendSignal({
+                type: "candidate",
+                to: peerId,
+                candidate: JSON.stringify(event.candidate),
+            });
+        }
+    };
+
+    pc.ontrack = (event) => {
+        const [stream] = event.streams;
+        if (!stream) {
+            return;
+        }
+
+        let audioEl = remoteAudioEls.get(peerId);
+        if (!audioEl) {
+            audioEl = document.createElement("audio");
+            audioEl.autoplay = true;
+            audioEl.playsInline = true;
+            remoteAudioEls.set(peerId, audioEl);
+            document.body.appendChild(audioEl);
+        }
+        if (audioEl.srcObject !== stream) {
+            audioEl.srcObject = stream;
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+            closePeer(peerId);
+        }
+    };
+
+    return pc;
+}
+
+async function makeOffer(peerId) {
+    const pc = createPeerConnection(peerId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal({
+        type: "offer",
+        to: peerId,
+        sdp: offer.sdp,
+    });
+}
+
+async function handleOffer(peerId, sdp) {
+    const pc = createPeerConnection(peerId);
+    await pc.setRemoteDescription({ type: "offer", sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendSignal({
+        type: "answer",
+        to: peerId,
+        sdp: answer.sdp,
+    });
+}
+
+async function handleAnswer(peerId, sdp) {
+    const pc = createPeerConnection(peerId);
+    await pc.setRemoteDescription({ type: "answer", sdp });
+}
+
+async function handleCandidate(peerId, candidateRaw) {
+    if (!candidateRaw) {
+        return;
+    }
+    const pc = createPeerConnection(peerId);
+    try {
+        const candidate = JSON.parse(candidateRaw);
+        await pc.addIceCandidate(candidate);
+    } catch (err) {
+        console.error("failed to add candidate", err);
+    }
+}
+
+function closePeer(peerId) {
+    const pc = peerConnections.get(peerId);
+    if (pc) {
+        pc.onicecandidate = null;
+        pc.ontrack = null;
+        pc.close();
+        peerConnections.delete(peerId);
+    }
+
+    const audioEl = remoteAudioEls.get(peerId);
+    if (audioEl) {
+        audioEl.srcObject = null;
+        audioEl.remove();
+        remoteAudioEls.delete(peerId);
+    }
+}
+
+function sendSignal(payload) {
+    if (!voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    voiceSocket.send(JSON.stringify(payload));
 }
 
 voiceJoinBtn.addEventListener("click", joinVoice);

@@ -1,8 +1,11 @@
 package voicews
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,7 +15,7 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 1 << 20 // 1MB chunks for audio payloads
+	maxMessageSize = 1 << 20
 )
 
 var upgrader = websocket.Upgrader{
@@ -22,10 +25,13 @@ var upgrader = websocket.Upgrader{
 }
 
 type Client struct {
+	id   string
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
 }
+
+var idCounter uint64
 
 func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -35,6 +41,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
+		id:   nextClientID(),
 		hub:  hub,
 		conn: conn,
 		send: make(chan []byte, 256),
@@ -65,7 +72,22 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		c.hub.broadcast <- message
+		var msg envelope
+		if err := json.Unmarshal(message, &msg); err != nil {
+			continue
+		}
+		if msg.To == "" {
+			continue
+		}
+
+		switch msg.Type {
+		case "offer", "answer", "candidate":
+			c.hub.signals <- routedSignal{
+				from: c.id,
+				to:   msg.To,
+				msg:  msg,
+			}
+		}
 	}
 }
 
@@ -85,7 +107,7 @@ func (c *Client) writePump() {
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.BinaryMessage)
+			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return
 			}
@@ -106,4 +128,9 @@ func (c *Client) writePump() {
 			}
 		}
 	}
+}
+
+func nextClientID() string {
+	id := atomic.AddUint64(&idCounter, 1)
+	return fmt.Sprintf("peer-%d", id)
 }
