@@ -113,7 +113,7 @@ let localStream = null;
 const peerConnections = new Map();
 const remoteAudioEls = new Map();
 
-const rtcConfig = {
+let rtcConfig = {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
@@ -123,6 +123,7 @@ async function joinVoice() {
     }
 
     try {
+        await loadWebRTCConfig();
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -181,6 +182,21 @@ async function joinVoice() {
     } catch (err) {
         console.error("voice error", err);
         voiceStatusEl.textContent = "Voice: permission error";
+    }
+}
+
+async function loadWebRTCConfig() {
+    try {
+        const res = await fetch("/api/webrtc-config");
+        if (!res.ok) {
+            throw new Error("config request failed");
+        }
+        const cfg = await res.json();
+        if (cfg && Array.isArray(cfg.iceServers) && cfg.iceServers.length > 0) {
+            rtcConfig = { iceServers: cfg.iceServers };
+        }
+    } catch (err) {
+        console.warn("failed to load webrtc config, fallback to STUN only", err);
     }
 }
 

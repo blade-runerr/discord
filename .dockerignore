@@ -1,0 +1,8 @@
+.git
+.gitignore
+.idea
+.vscode
+data
+*.exe
+*.out
+*.log

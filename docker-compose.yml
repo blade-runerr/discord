@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini-discord-app
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      TURN_HOST: "${TURN_HOST:-localhost}"
+      TURN_PORT: "${TURN_PORT:-3478}"
+      TURN_USERNAME: "${TURN_USERNAME:-webrtc}"
+      TURN_PASSWORD: "${TURN_PASSWORD:-webrtcpass}"
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      - turn
+    restart: unless-stopped
+
+  turn:
+    image: coturn/coturn:4.6.3-r2
+    container_name: mini-discord-turn
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+    volumes:
+      - ./deploy/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    restart: unless-stopped
+
+volumes:
+  app_data:

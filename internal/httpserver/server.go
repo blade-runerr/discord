@@ -5,8 +5,10 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"mini-discord/internal/storage"
 	"mini-discord/internal/voicews"
@@ -71,6 +73,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/voice", s.handleVoiceWebSocket)
 	s.mux.HandleFunc("/api/history", s.handleHistory)
+	s.mux.HandleFunc("/api/webrtc-config", s.handleWebRTCConfig)
 }
 
 func (s *Server) Start() error {
@@ -125,5 +128,50 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(messages); err != nil {
 		log.Printf("history write error: %v", err)
+	}
+}
+
+type iceServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+}
+
+type webrtcConfigResponse struct {
+	ICEServers []iceServer `json:"iceServers"`
+}
+
+func (s *Server) handleWebRTCConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	iceServers := []iceServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+	}
+
+	turnHost := strings.TrimSpace(os.Getenv("TURN_HOST"))
+	turnUser := strings.TrimSpace(os.Getenv("TURN_USERNAME"))
+	turnPass := os.Getenv("TURN_PASSWORD")
+	turnPort := strings.TrimSpace(os.Getenv("TURN_PORT"))
+	if turnPort == "" {
+		turnPort = "3478"
+	}
+
+	if turnHost != "" && turnUser != "" && turnPass != "" {
+		iceServers = append(iceServers, iceServer{
+			URLs: []string{
+				"turn:" + turnHost + ":" + turnPort + "?transport=udp",
+				"turn:" + turnHost + ":" + turnPort + "?transport=tcp",
+			},
+			Username:   turnUser,
+			Credential: turnPass,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(webrtcConfigResponse{ICEServers: iceServers}); err != nil {
+		log.Printf("webrtc config write error: %v", err)
 	}
 }
